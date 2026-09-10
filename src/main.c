@@ -1,9 +1,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "wifi.h"                    // 第 1 步：WiFi 模块
-#include "web.h"                     // 第 2 步：网页遥控模块
-#include "servo.h"                   // 第 2 章自制库：舵机驱动
+#include "System/wifi.h"    // 第 1 步：WiFi 模块
+#include "System/web.h"     // 第 2 步：网页遥控模块
+#include "Hardware/servo.h" // 第 2 章自制库：舵机驱动
 
 QueueHandle_t cmd_queue;             // ★ 长任务指令队列（web.h 里 extern 声明的就是它）
 
@@ -23,7 +23,7 @@ static void exec_task(void *arg) {
 
 void app_main(void) {
     for (int i = 0; i < SERVO_COUNT; i++) {                 // 第 2 章的舵机初始化
-        servo_init(servo_gpios[i], servo_channels[i]);
+        servo_init(servo_gpios[i], servo_channels[i],i);
         current_angle[i] = POSE_HOME[i];
         servo_write(servo_channels[i], current_angle[i]);
     }

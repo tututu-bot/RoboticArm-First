@@ -8,6 +8,7 @@
 #include "freertos/task.h"               // vTaskDelay
 #include "driver/ledc.h"                 // LEDC 外设驱动（LEDC_TIMER_14_BIT 等定义在这）
 #include "servo.h"                       // 自己的头文件：宏和 extern 声明从这里来
+#include "pid.h"                         // 位置式 PID（单舵机闭环脚手架要用）
 
 // ---- ③ 只在 servo.c 内部用的宏（web.c 不需要知道 LEDC 细节，所以不放 .h）----
 #define SERVO_FREQ_HZ    50                 // 舵机要求 50Hz（20ms 周期）
@@ -28,9 +29,23 @@ int POSE_LIFT[SERVO_COUNT]      = { 90,  70, 40,  90, 85};
 int POSE_PRE_PLACE[SERVO_COUNT] = {180,  70, 40,  90, 85};
 int POSE_PLACE[SERVO_COUNT]     = {180,  52, 50,  90, 85};
 int current_angle[SERVO_COUNT];            // 程序记账：每个舵机"现在"的角度
+//初始化PID
+pid_t srv_pid[SERVO_COUNT];
+float K_P[SERVO_COUNT] = {0.8, 0.8, 0.8, 0.8, 0.8}; // PID 比例增益（示教实测）
+float K_I[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0}; // PID 积分增益（示教实测）
+float K_D[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0}; // PID 微分增益（示教实测）
 
 // ========== 以下函数全部来自第 2 章，原样搬移 ==========
 
+// 编码器读"实际角度"：
+static float read_actual(int idx) {
+    if (idx == 0)
+    {
+        return (float)current_angle[idx];
+    }else{
+        return (float)current_angle[idx];
+    }
+}
 // 角度(0~180) → 占空比份数（§2.2.3 的公式落地）
 static uint32_t angle_to_duty(int angle) {              // ② static 保留（servo.c 内部用）
     int pulse_us = 500 + (2000 * angle) / 180;          // 第 1 步：角度 → 脉宽(µs)
@@ -40,8 +55,8 @@ static uint32_t angle_to_duty(int angle) {              // ② static 保留（s
 // 定时器只配一次，所有舵机共用
 static bool timer_ready = false;
 
-void servo_init(int gpio, int channel) {                // ② 去掉 static（对外接口）
-    // 第 1 层：配置定时器（§2.2.5）
+void servo_init(int gpio, int channel, int servo_idx) {                // ② 去掉 static（对外接口）
+    // 第 1 层：配置定时器
     if (!timer_ready) {
         ledc_timer_config_t timer = {
             .speed_mode      = LEDC_LOW_SPEED_MODE,
@@ -63,6 +78,12 @@ void servo_init(int gpio, int channel) {                // ② 去掉 static（�
         .hpoint     = 0,
     };
     ledc_channel_config(&ch);
+    // ★ PID 输出是“加到目标角度上的修正量”，限幅必须关于 0 对称，0 才放行。
+    // 之前下限误用 SERVO_MIN(=20)，把“0=不修正”强行抬成 +20°，导致每个命令
+    // 都多走 20°（底座 min=0 所以不偏）。修正量上限取该关节全行程。
+    float out_range = SERVO_MAX[servo_idx] - SERVO_MIN[servo_idx];
+    pid_init(&srv_pid[servo_idx], K_P[servo_idx], K_I[servo_idx], K_D[servo_idx],
+             -out_range, out_range);
 }
 
 void servo_write(int channel, int angle) {              // ② 去掉 static（对外接口）
@@ -81,21 +102,36 @@ int clamp_angle(int i, int angle) {                     // ② 去掉 static（�
 
 // 平滑运动：5 个舵机在 duration_ms 内一起走到 target（线性插值）
 void move_to(const int target[], int duration_ms) {     // ② 去掉 static（对外接口）
-    const int step_time = 15;                // 每小步 15ms
-    int steps = duration_ms / step_time;
+    const int T = 15;                // 每小步 15ms(T)
+    // ★ 每段移动前清零 PID 内部状态（积分/e_k1），避免上一段误差残留串进这段
+    for (int i = 0; i < SERVO_COUNT; i++)
+        pid_reset(&srv_pid[i]);
+    /*----------平滑运动---------------*/
+    //1.算步数（一次大的移动分为若干个小移动）
+    int steps = duration_ms / T;
     if (steps < 1) steps = 1;
+    //2.记录起点位置
     float start[SERVO_COUNT];
     for (int i = 0; i < SERVO_COUNT; i++) start[i] = current_angle[i];
+    //3.执行小移动
     for (int s = 1; s <= steps; s++) {
         float progress = (float)s / steps;
         for (int i = 0; i < SERVO_COUNT; i++) {
-            int t = clamp_angle(i, target[i]);          // ★ 目标先过限位闸
-            float a = start[i] + (t - start[i]) * progress;
-            servo_write(servo_channels[i], (int)a);
+            /*----------PID控制---------------*/
+            int t = clamp_angle(i, target[i]);
+            // 3.1 轨迹层：算出这一步目标角度
+            float  targetAngle = start[i] + (t - start[i]) * progress;
+            // 3.2 反馈层：读取当前实际角度
+            float  actualAngle = read_actual(i);
+            // 3.3 控制层：目标 + PID补偿 = 本拍命令
+            float  errAngle = pid_update(&srv_pid[i], targetAngle, actualAngle);
+            int    cmd      = clamp_angle(i, (int)(targetAngle + errAngle));
+            // 3.4 执行：电机移动实际
+            servo_write(servo_channels[i], cmd);
+            current_angle[i] = cmd;
         }
-        vTaskDelay(pdMS_TO_TICKS(step_time));
+        vTaskDelay(pdMS_TO_TICKS(T));
     }
-    for (int i = 0; i < SERVO_COUNT; i++) current_angle[i] = clamp_angle(i, target[i]);
 }
 
 // 只动夹爪：其他关节保持当前角度

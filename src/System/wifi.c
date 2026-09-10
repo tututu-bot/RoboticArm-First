@@ -17,6 +17,11 @@
 #include "wifi.h"                 // ⾃⼰的头⽂件：让"声明(wifi.h)和定义(wifi.c)"保持⼀致
 #define WIFI_SSID  "2405-1"    // ★ 改成你的 2.4G WiFi
 #define WIFI_PASS  "13802211121lxl"  // ★ 改成你的密码
+// ★ 固定 IP（想恢复 DHCP 就把下面的 1 改成 0）
+#define STATIC_IP_ENABLE 1
+#define STATIC_IP   "192.168.2.20"   // ★ 你要的固定 IP
+#define STATIC_GW   "192.168.2.1"    // ★ 网关，跟路由器后台一致
+#define STATIC_NM   "255.255.255.0"  // ★ 子网掩码，一般就是这个
 // 拿到 IP 的回调：连上后⾃动打印地址
 static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
@@ -27,7 +32,15 @@ void wifi_init(void) {
     if (e != ESP_OK) printf("nvs_flash_init err 0x%x\n", e);
     esp_netif_init();                        // 2. 初始化⽹络接⼝层
     esp_event_loop_create_default();         // 3. 事件循环（WiFi 事件靠它分发）
-    esp_netif_create_default_wifi_sta();     // 4. 创建"连路由器"模式（STA = 站点）
+    esp_netif_t *sta = esp_netif_create_default_wifi_sta();     // 4. 创建"连路由器"模式（STA = 站点）
+    if (STATIC_IP_ENABLE) {                    // 4.1 配固定 IP：先停 DHCP，再写死地址
+        ESP_ERROR_CHECK(esp_netif_dhcpc_stop(sta));
+        esp_netif_ip_info_t ip = {0};
+        ip.ip.addr       = esp_ip4addr_aton(STATIC_IP);
+        ip.gw.addr       = esp_ip4addr_aton(STATIC_GW);
+        ip.netmask.addr  = esp_ip4addr_aton(STATIC_NM);
+        ESP_ERROR_CHECK(esp_netif_set_ip_info(sta, &ip));
+    }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();  // 5. 初始化 WiFi 驱动（5.1 说的第 2 层）
     esp_wifi_init(&cfg);
     // 6. 注册事件回调：拿到 IP 时打印地址
