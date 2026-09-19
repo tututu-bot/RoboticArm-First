@@ -6,91 +6,85 @@
 #include <stdbool.h>                     // bool
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"               // vTaskDelay
-#include "driver/ledc.h"                 // LEDC 外设驱动（LEDC_TIMER_14_BIT 等定义在这）
 #include "servo.h"                       // 自己的头文件：宏和 extern 声明从这里来
-#include "pid.h"                         // 位置式 PID（单舵机闭环脚手架要用）
+#include "bus_servo.h"
+#include "sim_servo.h"
+#include "System/pid.h"                  // 位置式 PID（单舵机闭环脚手架要用）
 
 // ---- ③ 只在 servo.c 内部用的宏（web.c 不需要知道 LEDC 细节，所以不放 .h）----
 #define SERVO_FREQ_HZ    50                 // 舵机要求 50Hz（20ms 周期）
 #define LEDC_RESOLUTION  LEDC_TIMER_14_BIT  // 分辨率 14 位 = 16384 份
 #define DUTY_MAX         ((1 << 14) - 1)    // 16383
 
+
 // ---- 全局变量定义（servo.h 里的 extern 在这里"兑现"）----
-const int servo_gpios[SERVO_COUNT]    = {13, 14, 27, 26, 25};  // 底座/大臂/小臂/手腕/夹爪
-const int servo_channels[SERVO_COUNT] = { 0,  1,  2,  3,  4};  // LEDC 通道 0~4
-int SERVO_MIN[SERVO_COUNT] = {  0,  20,  20,  20,  20};
-int SERVO_MAX[SERVO_COUNT] = {180, 100, 160, 160, 100};   // 大臂(下标1)上限=倾覆临界-5°
-const int GRIPPER_OPEN  = 80;              // 夹爪张开角度（示教实测）
-const int GRIPPER_CLOSE = 25;              // 夹爪闭合角度（示教实测）
-int POSE_HOME[SERVO_COUNT]      = { 90,  70,  60,  90, 0};  // 示教姿势（换成你的实测值）
-int POSE_PRE_GRAB[SERVO_COUNT]  = { 90,  70, 40,  90, 0};
-int POSE_GRAB[SERVO_COUNT]      = { 90,  52, 25,  90, 0};
-int POSE_LIFT[SERVO_COUNT]      = { 90,  70, 40,  90, 85};
-int POSE_PRE_PLACE[SERVO_COUNT] = {180,  70, 40,  90, 85};
-int POSE_PLACE[SERVO_COUNT]     = {180,  52, 50,  90, 85};
+//                                  J1   J2   J3   J4   J5   J6(夹爪)
+const int servo_gpios[SERVO_COUNT]    = {13,  14,  27,  26,  25,  33};  // J1 是总线舵机，其余是模拟舵机
+const int servo_channels[SERVO_COUNT] = { 0,   1,   2,   3,   4,   5};  // LEDC 通道 0~5（J1 走串口，不用通道）
+const int JOINT_1_ID = 0;   // ★ 这是"总线舵机 ID"，不是关节编号！探测实测底座舵机 = ID 000
+const int BUS_RX_GPIO = 4;
+int SERVO_MIN[SERVO_COUNT] = {  0,   0,   0,   0,   0,   35};   // 全部舵机下限=0°（示教实测）
+int SERVO_MAX[SERVO_COUNT] = {180, 180, 180, 180, 180, 135};  // 全部舵机上限=180°
+// GRIPPER_OPEN / GRIPPER_CLOSE 已经挪到 servo.h 当宏（数组初始化式里要用）
+// POSE_* 数组的第 6 列是 J6 夹爪：接近时张开，抓稳之后必须闭合，
+// 否则 move_to() 会把夹爪又掰回张开、把东西掉在地上
+int POSE_HOME[SERVO_COUNT]      = { 90,  90,  90,  90,  90,  90};
+int POSE_PRE_GRAB[SERVO_COUNT]  = { 90,  70,  40,  90,   0, GRIPPER_OPEN};
+int POSE_GRAB[SERVO_COUNT]      = { 90,  52,  25,  90,   0, GRIPPER_OPEN};
+int POSE_LIFT[SERVO_COUNT]      = { 90,  70,  40,  90,  85, GRIPPER_CLOSE};
+int POSE_PRE_PLACE[SERVO_COUNT] = {180,  70,  40,  90,  85, GRIPPER_CLOSE};
+int POSE_PLACE[SERVO_COUNT]     = {180,  52,  50,  90,  85, GRIPPER_CLOSE};
 int current_angle[SERVO_COUNT];            // 程序记账：每个舵机"现在"的角度
 //初始化PID
 pid_t srv_pid[SERVO_COUNT];
-float K_P[SERVO_COUNT] = {0.8, 0.8, 0.8, 0.8, 0.8}; // PID 比例增益（示教实测）
-float K_I[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0}; // PID 积分增益（示教实测）
-float K_D[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0}; // PID 微分增益（示教实测）
+float K_P[SERVO_COUNT] = {0.8, 0.8, 0.8, 0.8, 0.8, 0.8}; // PID 比例增益（示教实测）
+float K_I[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // PID 积分增益（示教实测）
+float K_D[SERVO_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // PID 微分增益（示教实测）
 
 // ========== 以下函数全部来自第 2 章，原样搬移 ==========
 
-// 编码器读"实际角度"：
+//编码器读"实际角度"：
 static float read_actual(int idx) {
-    if (idx == 0)
-    {
-        return (float)current_angle[idx];
-    }else{
-        return (float)current_angle[idx];
+    if (idx == 0){//如果是J1（底座）
+        int a = bus_servo_read_angle(JOINT_1_ID);
+        if (a >= 0) return (float)a;   // 真读到了就用真的
+        // 读不到（没接 RX 线 / 超时）就退回程序记账，
+        // ★ 千万别把 -1 直接喂进 PID：e = target-(-1) = target+1，
+        //   再乘 Kp=0.8，90° 会被命令成 90+72.8=163°，直接顶到上限
     }
-}
-// 角度(0~180) → 占空比份数（§2.2.3 的公式落地）
-static uint32_t angle_to_duty(int angle) {              // ② static 保留（servo.c 内部用）
-    int pulse_us = 500 + (2000 * angle) / 180;          // 第 1 步：角度 → 脉宽(µs)
-    return (uint32_t)((uint64_t)pulse_us * DUTY_MAX / 20000);  // 第 2 步：脉宽 → 份数
+    return (float)current_angle[idx];
 }
 
-// 定时器只配一次，所有舵机共用
-static bool timer_ready = false;
+//角度转占空比
+static uint32_t angle_to_duty(int angle) {
+    int pulse_us = 500 + (2000 * angle) / 180;          
+    return (uint32_t)((uint64_t)pulse_us * DUTY_MAX / 20000);  
+}
 
-void servo_init(int gpio, int channel, int servo_idx) {                // ② 去掉 static（对外接口）
-    // 第 1 层：配置定时器
-    if (!timer_ready) {
-        ledc_timer_config_t timer = {
-            .speed_mode      = LEDC_LOW_SPEED_MODE,
-            .duty_resolution = LEDC_RESOLUTION,
-            .timer_num       = LEDC_TIMER_0,
-            .freq_hz         = SERVO_FREQ_HZ,
-            .clk_cfg         = LEDC_AUTO_CLK,
-        };
-        ledc_timer_config(&timer);
-        timer_ready = true;
+
+//舵机初始化
+void servo_init(int gpio, int channel, int servo_idx) {                
+    //初始化 PID 控制器
+    pid_init(&srv_pid[servo_idx], K_P[servo_idx], K_I[servo_idx], K_D[servo_idx]);
+    //数字舵机J1（底座）初始化
+    if (gpio == 13){
+        bus_servo_init(gpio, JOINT_1_ID);
+        bus_servo_enable_readback(BUS_RX_GPIO);
+        return;
     }
-    // 第 2 层：绑定通道
-    ledc_channel_config_t ch = {
-        .gpio_num   = gpio,
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .channel    = (ledc_channel_t)channel,
-        .timer_sel  = LEDC_TIMER_0,
-        .duty       = 0,
-        .hpoint     = 0,
-    };
-    ledc_channel_config(&ch);
-    // ★ PID 输出是“加到目标角度上的修正量”，限幅必须关于 0 对称，0 才放行。
-    // 之前下限误用 SERVO_MIN(=20)，把“0=不修正”强行抬成 +20°，导致每个命令
-    // 都多走 20°（底座 min=0 所以不偏）。修正量上限取该关节全行程。
-    float out_range = SERVO_MAX[servo_idx] - SERVO_MIN[servo_idx];
-    pid_init(&srv_pid[servo_idx], K_P[servo_idx], K_I[servo_idx], K_D[servo_idx],
-             -out_range, out_range);
+    //模拟舵机J2、J3、J4、J5、J6初始化
+    sim_servo_init(gpio, channel);
 }
-
-void servo_write(int channel, int angle) {              // ② 去掉 static（对外接口）
-    uint32_t duty = angle_to_duty(angle);               // 角度 → 份数
-    // 第 3 层：写占空比（写两次才生效）
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)channel);
+//舵机转动
+void servo_write(int gpio, int channel, int angle) {              
+    uint32_t duty = angle_to_duty(angle);
+    //数字舵机J1（底座）转动
+    if(gpio == 13){
+        bus_servo_write(JOINT_1_ID,angle);
+        return;
+    }
+    //模拟舵机J2、J3、J4、J5、J6转动
+    sim_servo_write(channel, duty);
 }
 
 // 限幅：任何角度在写出去之前先过这道闸（保护舵机 + 防倾覆双保险）
@@ -101,7 +95,7 @@ int clamp_angle(int i, int angle) {                     // ② 去掉 static（�
 }
 
 // 平滑运动：5 个舵机在 duration_ms 内一起走到 target（线性插值）
-void move_to(const int target[], int duration_ms) {     // ② 去掉 static（对外接口）
+void move_to(const int target[], int duration_ms) {     
     const int T = 15;                // 每小步 15ms(T)
     // ★ 每段移动前清零 PID 内部状态（积分/e_k1），避免上一段误差残留串进这段
     for (int i = 0; i < SERVO_COUNT; i++)
@@ -127,7 +121,7 @@ void move_to(const int target[], int duration_ms) {     // ② 去掉 static（�
             float  errAngle = pid_update(&srv_pid[i], targetAngle, actualAngle);
             int    cmd      = clamp_angle(i, (int)(targetAngle + errAngle));
             // 3.4 执行：电机移动实际
-            servo_write(servo_channels[i], cmd);
+            servo_write(servo_gpios[i], servo_channels[i], cmd);
             current_angle[i] = cmd;
         }
         vTaskDelay(pdMS_TO_TICKS(T));

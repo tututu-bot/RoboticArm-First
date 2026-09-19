@@ -22,10 +22,11 @@ static void exec_task(void *arg) {
 }
 
 void app_main(void) {
+    printf("reset reason = %d\n", esp_reset_reason());
     for (int i = 0; i < SERVO_COUNT; i++) {                 // 第 2 章的舵机初始化
         servo_init(servo_gpios[i], servo_channels[i],i);
         current_angle[i] = POSE_HOME[i];
-        servo_write(servo_channels[i], current_angle[i]);
+        servo_write(servo_gpios[i], servo_channels[i], current_angle[i]);
     }
     cmd_queue = xQueueCreate(8, sizeof(char));   // 创建长任务指令队列
     wifi_init();                                 // 连 WiFi（打印 IP）

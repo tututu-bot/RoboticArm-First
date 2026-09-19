@@ -3,6 +3,7 @@
 #include "esp_http_server.h" // ⽹⻚服务器（5.1 说的第 4 层组件）
 #include "freertos/queue.h"  // 队列（第 3 章）
 #include "../Hardware/servo.h"           // ⾃制库：指令解析要控制舵机
+#include "../Hardware/bus_servo.h"        // ⾃制库：总线舵机控制
 #include "nvs.h"             // 轨迹存开发板 flash（断电不丢）
 #include "web.h"             // ⾃⼰的头⽂件（让声明和定义⼀致）
 // 遥控⾯板：机械臂控制（5 路滑条实时控制舵机⻆度）
@@ -19,11 +20,12 @@ static const char *REMOTE_PAGE =
     ".sec{background:#f7f7f7;border-radius:8px;padding:10px;margin:12px 0;text-align:left}"
     ".pt{font-size:13px;color:#555;margin:2px 0}</style>"
     "<h3>机械臂控制（0-180°）</h3>"
-    "<div class='row'><label>底座</label><input type='range' id='s0' min='0' max='180' value='90' oninput='move(0)'><span id='v0'>90</span></div>"
-    "<div class='row'><label>大臂</label><input type='range' id='s1' min='0' max='180' value='120' oninput='move(1)'><span id='v1'>120</span></div>"
-    "<div class='row'><label>小臂</label><input type='range' id='s2' min='0' max='180' value='45' oninput='move(2)'><span id='v2'>45</span></div>"
-    "<div class='row'><label>手腕</label><input type='range' id='s3' min='0' max='180' value='10' oninput='move(3)'><span id='v3'>10</span></div>"
-    "<div class='row'><label>夹爪</label><input type='range' id='s4' min='0' max='180' value='180' oninput='move(4)'><span id='v4'>180</span></div>"
+    "<div class='row'><label>J1</label><input type='range' id='s0' min='0' max='180' value='90' oninput='move(0)'><span id='v0'>90</span></div>"
+    "<div class='row'><label>J2</label><input type='range' id='s1' min='0' max='180' value='90' oninput='move(1)'><span id='v1'>90</span></div>"
+    "<div class='row'><label>J3</label><input type='range' id='s2' min='0' max='180' value='90' oninput='move(2)'><span id='v2'>90</span></div>"
+    "<div class='row'><label>J4</label><input type='range' id='s3' min='0' max='180' value='90' oninput='move(3)'><span id='v3'>90</span></div>"
+    "<div class='row'><label>J5</label><input type='range' id='s4' min='0' max='180' value='90' oninput='move(4)'><span id='v4'>90</span></div>"
+    "<div class='row'><label>J6</label><input type='range' id='s5' min='0' max='180' value='90' oninput='move(5)'><span id='v5'>90</span></div>"
     "<div id='status' style='font-size:14px;color:#999;margin-top:10px'></div>"
     // ---- 轨迹录制：拖滑条摆好机械臂，点「记录当前点」存一个点位 ----
     "<div class='sec'><b>轨迹录制</b><br>"
@@ -37,24 +39,24 @@ static const char *REMOTE_PAGE =
     "回放速度: <input type='number' id='tspeed' value='60' min='10' max='180' style='width:70px'> 度/秒<br>"
     "<div id='trajlist'></div></div>"
     "<script>"
-    "var pts=[],trajNames=[],timer=null;"
-    // 拖动滑条：角度数值立即刷新，30ms 防抖后把 5 个角度一起发给舵机
+    "var N=6,pts=[],trajNames=[],timer=null;"   // ★ N = 舵机数量，必须和 servo.h 的 SERVO_COUNT 一致
+    // 拖动滑条：角度数值立即刷新，30ms 防抖后把 6 个角度一起发给舵机
     "function show(i){document.getElementById('v'+i).textContent=document.getElementById('s'+i).value;}"
     "function move(i){show(i);if(timer)clearTimeout(timer);timer=setTimeout(function(){"
-    "var a=[];for(var j=0;j<5;j++)a.push(document.getElementById('s'+j).value);"
+    "var a=[];for(var j=0;j<N;j++)a.push(document.getElementById('s'+j).value);"
     "fetch('/cmd?c='+encodeURIComponent('A='+a.join(',')))"
     ".then(function(){document.getElementById('status').textContent='已发送: '+a.join(',');})"
     ".catch(function(){document.getElementById('status').textContent='发送失败!';});},30);}"
     // 打开页面时从 /state 读当前角度，让滑条对齐舵机真实状态
     "function loadState(){fetch('/state').then(function(r){return r.text();}).then(function(t){"
-    "var v=t.split(',');if(v.length>=5){for(var i=0;i<5;i++){"
+    "var v=t.split(',');if(v.length>=N){for(var i=0;i<N;i++){"
     "document.getElementById('s'+i).value=v[i];"
     "document.getElementById('v'+i).textContent=v[i];}}}).catch(function(){});}"
     // ---- 轨迹录制：把当前滑条角度存成一个点位 ----
     "function renderPts(){var d=document.getElementById('ptlist');d.innerHTML='';"
     "for(var i=0;i<pts.length;i++)d.innerHTML+=\"<div class='pt'>点\"+(i+1)+\": \"+pts[i].join(',')+\"</div>\";}"
     "function recordPoint(){if(pts.length>=40){document.getElementById('status').textContent='最多40个点!';return;}"
-    "var a=[];for(var j=0;j<5;j++)a.push(document.getElementById('s'+j).value);"
+    "var a=[];for(var j=0;j<N;j++)a.push(document.getElementById('s'+j).value);"
     "pts.push(a);renderPts();document.getElementById('status').textContent='已记录点'+(pts.length);}"
     "function clearPts(){pts=[];renderPts();document.getElementById('status').textContent='已清空点位';}"
     "function genTraj(){var name=document.getElementById('tname').value.replace(/[;\"\\n\\r<>&]/g,'').trim().slice(0,16);"
@@ -88,9 +90,9 @@ static const char *REMOTE_PAGE =
     "loadState();loadTraj();"
     "</script></body></html>";
 // ===== 轨迹相关全局 =====
-#define TRAJ_BUF_SIZE 768            // 40 点轨迹约 560 字节，给足余量
+#define TRAJ_BUF_SIZE 1024           // 40 点 × 6 个舵机约 840 字节，给足余量
 static int traj_speed = 60;          // 回放速度：度/秒（V= 指令可调，10~180）
-static char traj_buf[TRAJ_BUF_SIZE]; // 轨迹数据："90,120,45,10,180;80,110,..."
+static char traj_buf[TRAJ_BUF_SIZE]; // 轨迹数据："90,90,90,90,90,90;80,110,..."
 static volatile int stop_traj = 0;   // 停⽌标志（S 指令置 1）
 // 执⾏⼀条轨迹（内部函数，仅供 traj_execute 调⽤）
 static void run_traj(const char *s);
@@ -204,12 +206,13 @@ static void run_traj(const char *s)
         int n = 0;
         while (*q)
         {
-            int v[5];
-            if (sscanf(q, "%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4]) < 5)
+            int v[SERVO_COUNT];
+            if (sscanf(q, "%d,%d,%d,%d,%d,%d",
+                       &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) < SERVO_COUNT)
                 break; // 解析失败就停（数据截断时也能把已解析的点打印出来）
             n++;
-            printf("[轨迹] 起始点位%d: %d %d %d %d %d\n",
-                   n, v[0], v[1], v[2], v[3], v[4]);
+            printf("[轨迹] 起始点位%d: %d %d %d %d %d %d\n",
+                   n, v[0], v[1], v[2], v[3], v[4], v[5]);
             const char *semi = strchr(q, ';'); // 跳到下⼀个点位
             if (!semi)
                 break;
@@ -221,8 +224,9 @@ static void run_traj(const char *s)
     const char *p = s;
     while (*p && !stop_traj)
     {
-        int v[5];
-        if (sscanf(p, "%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4]) < 5)
+        int v[SERVO_COUNT];
+        if (sscanf(p, "%d,%d,%d,%d,%d,%d",
+                   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) < SERVO_COUNT)
             break; // 解析失败（数据被截断）就退出
         int target[SERVO_COUNT];
         int max_delta = 0;
@@ -241,12 +245,12 @@ static void run_traj(const char *s)
         move_to(target, duration); // ★ 平滑限速过渡（内部再限位）
         if (stop_traj)
             break;
-        // ★ 一个点位到位后，串口打印当前状态的 5 路舵机角度
+        // ★ 一个点位到位后，串口打印当前状态的 6 路舵机角度
         pt_no++;
-        printf("[轨迹] 点位%d完成 -> 舵机角度: %d %d %d %d %d\n",
+        printf("[轨迹] 点位%d完成 -> 舵机角度: %d %d %d %d %d %d\n",
                pt_no,
-               current_angle[0], current_angle[1], current_angle[2],
-               current_angle[3], current_angle[4]);
+               bus_servo_read_angle(JOINT_1_ID), current_angle[1], current_angle[2],
+               current_angle[3], current_angle[4], current_angle[5]);
         const char *semi = strchr(p, ';'); // 找下⼀个点的分号
         if (!semi)
             break; // 没有分号 = 最后⼀个点
@@ -257,20 +261,21 @@ static void run_traj(const char *s)
 // 指令解析：即时指令直接执⾏；⻓任务指令（G/H/T）在 cmd_handler ⾥⼊队
 void handle_command(const char *cmd)
 {
-    // ---- 滑动条绝对值：A=90,120,45,10,180 ----
+    // ---- 滑动条绝对值：A=90,90,90,90,90,90 ----
     if (strncmp(cmd, "A=", 2) == 0)
     {
-        int v[5];
-        if (sscanf(cmd + 2, "%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4]) == 5)
+        int v[SERVO_COUNT];
+        if (sscanf(cmd + 2, "%d,%d,%d,%d,%d,%d",
+                   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == SERVO_COUNT)
         {
-            printf("滑条指令收到: %d,%d,%d,%d,%d -> 限位后: %d,%d,%d,%d,%d\n",
-                   v[0], v[1], v[2], v[3], v[4],
+            printf("滑条指令收到: %d,%d,%d,%d,%d,%d -> 限位后: %d,%d,%d,%d,%d,%d\n",
+                   v[0], v[1], v[2], v[3], v[4], v[5],
                    clamp_angle(0, v[0]), clamp_angle(1, v[1]), clamp_angle(2, v[2]),
-                   clamp_angle(3, v[3]), clamp_angle(4, v[4]));
+                   clamp_angle(3, v[3]), clamp_angle(4, v[4]), clamp_angle(5, v[5]));
             for (int i = 0; i < SERVO_COUNT; i++)
             {
                 current_angle[i] = clamp_angle(i, v[i]); // 滑条拖到危险区？限位弹回
-                servo_write(servo_channels[i], current_angle[i]);
+                servo_write(servo_gpios[i], servo_channels[i], current_angle[i]);
             }
         }
         return;
@@ -321,8 +326,8 @@ void handle_command(const char *cmd)
         stop_traj = 1;
         return; // 停⽌当前轨迹（下个点前停下）
     case 'p':
-        printf("⻆度: %d %d %d %d %d\n", current_angle[0], current_angle[1],
-               current_angle[2], current_angle[3], current_angle[4]);
+        printf("⻆度: %d %d %d %d %d %d\n", current_angle[0], current_angle[1],
+               current_angle[2], current_angle[3], current_angle[4], current_angle[5]);
         return;
     // ---- ⻋控区（第 7 章替换为真实现，协议不变）----
     case 'N':
@@ -338,7 +343,7 @@ void handle_command(const char *cmd)
     }
     // ⻆度类指令统⼀写出（限位已经在 clamp_angle ⾥）
     for (int i = 0; i < SERVO_COUNT; i++)
-        servo_write(servo_channels[i], current_angle[i]);
+        servo_write(servo_gpios[i], servo_channels[i], current_angle[i]);
 }
 // ---- web.c 第三块：HTTP 路由（web.c 私有，不暴露）----
 // 首页：返回遥控面板
@@ -379,10 +384,10 @@ static void url_decode(char *dst, const char *src, size_t dst_size)
 
 static esp_err_t cmd_handler(httpd_req_t *req)
 {
-    char buf[1024]; // 轨迹数据可能较长，给足空间
+    char buf[2048]; // 轨迹数据可能较长，给足空间
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK)
     {
-        char cmd[768];
+        char cmd[1024];
         if (httpd_query_key_value(buf, "c", cmd, sizeof(cmd)) == ESP_OK)
         {
             url_decode(cmd, cmd, sizeof(cmd)); // ★ 手动百分号解码（%3D->= %2C->,）
@@ -416,13 +421,13 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// /state：返回 5 路舵机当前⻆度，浏览器加载页面时对齐滑条
+// /state：返回 6 路舵机当前⻆度，浏览器加载页面时对齐滑条
 static esp_err_t state_handler(httpd_req_t *req)
 {
     char buf[64];
-    snprintf(buf, sizeof(buf), "%d,%d,%d,%d,%d",
+    snprintf(buf, sizeof(buf), "%d,%d,%d,%d,%d,%d",
              current_angle[0], current_angle[1], current_angle[2],
-             current_angle[3], current_angle[4]);
+             current_angle[3], current_angle[4], current_angle[5]);
     httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
@@ -437,11 +442,11 @@ static esp_err_t test_handler(httpd_req_t *req)
     for (int i = 0; i < SERVO_COUNT; i++)
     {
         printf("测试舵机 %d (GPIO %d)\n", i, servo_gpios[i]);
-        servo_write(servo_channels[i], clamp_angle(i, 40));
+        servo_write(servo_gpios[i], servo_channels[i], clamp_angle(i, 40));
         vTaskDelay(pdMS_TO_TICKS(300));
-        servo_write(servo_channels[i], clamp_angle(i, 140));
+        servo_write(servo_gpios[i], servo_channels[i], clamp_angle(i, 140));
         vTaskDelay(pdMS_TO_TICKS(300));
-        servo_write(servo_channels[i], save[i]);
+        servo_write(servo_gpios[i], servo_channels[i], save[i]);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
     return ESP_OK;
@@ -458,9 +463,9 @@ static esp_err_t traj_handler(httpd_req_t *req)
 // /traj_add?n=名称&p=点位串：保存一条轨迹（同名覆盖），写入 NVS
 static esp_err_t traj_add_handler(httpd_req_t *req)
 {
-    char buf[1600];
+    char buf[2048];              // 和数据里 HTTPD_MAX_URI_LEN 一样大（超了 httpd 直接拒收）
     char name[256] = "";
-    char pts[768] = "";
+    char pts[1024] = "";
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK &&
         httpd_query_key_value(buf, "n", name, sizeof(name)) == ESP_OK &&
         httpd_query_key_value(buf, "p", pts, sizeof(pts)) == ESP_OK)

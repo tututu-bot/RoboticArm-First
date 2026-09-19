@@ -15,8 +15,8 @@
 #include "esp_wifi.h"             // WiFi 驱动
 #include "esp_event.h"            // 事件循环（WiFi 事件分发）
 #include "wifi.h"                 // ⾃⼰的头⽂件：让"声明(wifi.h)和定义(wifi.c)"保持⼀致
-#define WIFI_SSID  "2405-1"    // ★ 改成你的 2.4G WiFi
-#define WIFI_PASS  "13802211121lxl"  // ★ 改成你的密码
+#define WIFI_SSID  "2405-1"    //dada，2405-1
+#define WIFI_PASS  "13802211121lxl"  //66483179，13802211121lxl
 // ★ 固定 IP（想恢复 DHCP 就把下面的 1 改成 0）
 #define STATIC_IP_ENABLE 1
 #define STATIC_IP   "192.168.2.20"   // ★ 你要的固定 IP
