@@ -113,7 +113,6 @@ int bus_servo_read_angle(int servo_id)
             int angle = (pulse - 500) * 180 / 2000; 
             if (angle < 0)   angle = 0;
             if (angle > 180) angle = 180;
-            printf("总线舵机 %d 当前实际角度 %d\n", servo_id, angle);
             return angle;
         }
     }

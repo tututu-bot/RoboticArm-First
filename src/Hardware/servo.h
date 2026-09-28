@@ -43,6 +43,9 @@ void servo_init(int gpio, int channel, int servo_idx);
 void servo_write(int gpio, int channel, int angle);
 
 int  clamp_angle(int i, int angle);                  // 角度限位（防倾覆第一道闸）
-void move_to(const int target[], int duration_ms);   // 5 舵机平滑移动到目标
 void gripper_move(int angle, int duration_ms);       // 只动夹爪
 void pick_and_place(void);                           // 一键抓取流程
+
+
+int read_current_state(int out[6]);
+int move_to(const int target[], int spend_time);
