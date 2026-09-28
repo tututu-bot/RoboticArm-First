@@ -3,3 +3,12 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# macOS 目录垃圾（不带斜杠，子目录同样生效）
+.DS_Store
+
+# IDE 个人配置，各人本地自己生成
+.idea/
+
+# 编译期自动生成：由 scripts/embed_html.py 从 src/index.html 生成，改 HTML 后重新编译即可
+src/index_html.c
