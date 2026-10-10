@@ -12,6 +12,7 @@
 #include "freertos/queue.h"
 #include "Hardware/servo.h"
 #include "Hardware/bus_servo.h"
+#include "Hardware/mcu.h"
 #include "flash.h"
 #include "web.h"
 
@@ -79,6 +80,38 @@ static esp_err_t page_handler(httpd_req_t *req){
     return ESP_OK;
 }
 
+//CAN 测试页：整页就一个按钮，点一次发一次 CAN_PING（不走 index.html）
+static const char ping_page[] =
+"<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+"<title>CAN 心跳测试</title><style>"
+"body{margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;"
+"justify-content:center;gap:24px;background:#101418;color:#e8eef4;"
+"font-family:system-ui,-apple-system,'PingFang SC',sans-serif}"
+"button{padding:20px 56px;font-size:24px;color:#06121a;background:#3ea6ff;"
+"border:0;border-radius:10px}button:disabled{opacity:.5}"
+"#out{min-height:28px;font-size:18px;color:#8fa0b0}#out.ok{color:#45d483}#out.bad{color:#ff5a5a}"
+"</style></head><body>"
+"<button id=\"b\">发送 CAN_PING</button><div id=\"o\">未发送</div>"
+"<script>"
+"const b=document.getElementById('b'),o=document.getElementById('o');"
+"b.onclick=async()=>{b.disabled=1;o.className='';o.textContent='发送中…';"
+"const t=performance.now();"
+"try{const r=await fetch('/ping_send'),x=await r.text(),"
+"ms=Math.round(performance.now()-t);"
+"if(x==='ok'){o.className='ok';o.textContent='收到 CAN_PONG ✅  '+ms+' ms'}"
+"else{o.className='bad';o.textContent='无回应 ❌  '+ms+' ms（返回 '+x+'）'}}"
+"catch(e){o.className='bad';o.textContent='请求失败：'+e}"
+"b.disabled=0};"
+"</script></body></html>";
+
+//把测试页发出去
+static esp_err_t ping_page_handler(httpd_req_t *req){
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_send(req, ping_page, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 static void url_decode(char *dst, const char *src, size_t dst_size)
 {
     size_t i = 0, j = 0;
@@ -108,7 +141,6 @@ static void url_decode(char *dst, const char *src, size_t dst_size)
 
 // /pose?a=90,90,90,90,90,90：滑条绝对值，6 个角度一次下发（clamp_angle 兜限位）
 static esp_err_t pose_handler(httpd_req_t *req){
-    printf("-----------pose_handler------------");
     if (traj_busy()){ // 回放中不接手动调角度，避免和轨迹抢舵机
         httpd_resp_send(req, "busy", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
@@ -122,13 +154,25 @@ static esp_err_t pose_handler(httpd_req_t *req){
         if (sscanf(val, "%d,%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == SERVO_COUNT){
             for (int i = 0; i < SERVO_COUNT; i++){
                 current_angle[i] = clamp_angle(i, v[i]);
+                int resp = servo_write(i, current_angle[i]);
+                if (resp != 1){
+                    httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
+                    return ESP_OK;
+                }
             }
-            int resp = move_to(current_angle,200);
-            if (resp == 1){
-                httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
-                return ESP_OK;
-            }
+            httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
         }
+    }
+    httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+//发一次 CAN_PING，驱动板应回 CAN_PONG（测试页的按钮打这个接口）
+static esp_err_t ping_send_handler(httpd_req_t *req){
+    if (mcu_ping()){
+        httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
     }
     httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -137,7 +181,7 @@ static esp_err_t pose_handler(httpd_req_t *req){
 //读取当前返回前端
 static esp_err_t state_handler(httpd_req_t *req){
     char buf[64];
-    int resp = read_current_state(current_angle);
+    int resp = traj_busy() ? 1 : read_current_state(current_angle);
     if (resp == 1){
         //读取成功；末位多带一个回放标志（1=回放中），前端据此锁住滑条
         snprintf(buf, sizeof(buf), "%d,%d,%d,%d,%d,%d,%d",
@@ -147,12 +191,8 @@ static esp_err_t state_handler(httpd_req_t *req){
         httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
+    httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
-    // else{
-    //     //读取失败处理
-    //     httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
-    //     return ESP_FAIL;
-    // }
 }
     
    
@@ -260,11 +300,15 @@ static esp_err_t traj_play_handler(httpd_req_t *req)
 void web_start(void){
     nvs_init();
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.stack_size = 8192;
+    cfg.max_uri_handlers = 16;
+    cfg.max_uri_len      = 2048;
+    cfg.stack_size       = 8192;
     httpd_handle_t server = NULL;
     httpd_start(&server, &cfg);
     const httpd_uri_t routes[] = {
         {.uri = "/",          .method = HTTP_GET, .handler = page_handler},
+        {.uri = "/ping",      .method = HTTP_GET, .handler = ping_page_handler},
+        {.uri = "/ping_send", .method = HTTP_GET, .handler = ping_send_handler},
         {.uri = "/state",     .method = HTTP_GET, .handler = state_handler},
         {.uri = "/pose",      .method = HTTP_GET, .handler = pose_handler},
         {.uri = "/traj",      .method = HTTP_GET, .handler = traj_handler},

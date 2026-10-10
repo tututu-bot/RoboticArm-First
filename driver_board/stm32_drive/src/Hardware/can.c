@@ -17,7 +17,7 @@
  * 保护策略：1)停止当前动作 2)任务队列删除所有动作帧 
  *         3)缓慢恢复homepose，串口返回失联信息 4)一旦收到报文，自动恢复正常可操作状态
  */
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "task.h"
@@ -32,24 +32,25 @@ volatile TickType_t last_rx_tick = 0;
 
 //CAN的GPIO配置
 static void can_gpio_init(void){
-    //启动GPIOA和CAN1时钟树
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+    //启动GPIOB和CAN1时钟树
+    __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_CAN1_CLK_ENABLE();
-    //绑定CAN1的RX和TX引脚为PA11和PA12
+    //绑定CAN1的RX和TX引脚为PB8和PB9
     GPIO_InitTypeDef g = {0};
-    g.Pin = GPIO_PIN_11;  g.Mode = GPIO_MODE_INPUT;  g.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(GPIOA, &g);
-    g.Pin = GPIO_PIN_12;  g.Mode = GPIO_MODE_AF_PP;  g.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &g);
+    g.Pin       = GPIO_PIN_8 | GPIO_PIN_9;
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Speed     = GPIO_SPEED_FREQ_HIGH;
+    g.Alternate = GPIO_AF9_CAN1;
+    HAL_GPIO_Init(GPIOB, &g);
 }
 //CAN的基本配置
 static void can_config_init(void){
     //配置对象为CAN1
     can.Instance = CAN1;
     //波特率设置
-    can.Init.Prescaler = 4;
+    can.Init.Prescaler = 6;
     can.Init.SyncJumpWidth = CAN_SJW_1TQ;
-    can.Init.TimeSeg1 = CAN_BS1_15TQ;
+    can.Init.TimeSeg1 = CAN_BS1_11TQ;
     can.Init.TimeSeg2 = CAN_BS2_2TQ;
     //选择模式：正常收发模式
     can.Init.Mode = CAN_MODE_NORMAL;
@@ -79,7 +80,6 @@ static void can_filter_init(void){
     HAL_CAN_ConfigFilter(&can, &f);
 }
 void can_init() {
-    printf("stm-can-init");
     //CAN启动前（GPIO、配置、滤波器）
     can_gpio_init();
     can_config_init();
@@ -88,17 +88,13 @@ void can_init() {
     HAL_CAN_Start(&can);
     HAL_CAN_ActivateNotification(&can, CAN_IT_RX_FIFO0_MSG_PENDING);
 
-    // ★ 队列必须放在最后建！xQueueCreate 会进 FreeRTOS 临界区，而调度器启动前
-    //   uxCriticalNesting 还是哨兵值 0xaaaaaaaa（见 port.c:133），vPortExitCritical()
-    //   判 != 0 就不恢复 BASEPRI（port.c:382）→ 中断被永久屏蔽 → SysTick 停 →
-    //   HAL_GetTick() 冻结 → 上面 HAL_CAN_Start/Init 的 10ms 超时永不成立 → 死循环。
-    //   规则：vTaskStartScheduler() 之前，先做硬件，FreeRTOS 对象放最后。
     can_rx_queue   = xQueueCreate(2, sizeof(can_frame_t));
     can_resp_queue = xQueueCreate(4, sizeof(can_frame_t));
+    can_enable_rx();
 }
 void can_enable_rx(void) {
-    HAL_NVIC_SetPriority(USB_LP_CAN1_RX0_IRQn, 5, 0);
-    HAL_NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+    HAL_NVIC_SetPriority(CAN1_RX0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
 }
 //接收报文
 void Can_ReceiveMsg(CAN_HandleTypeDef *can) {
@@ -119,7 +115,8 @@ void Can_ReceiveMsg(CAN_HandleTypeDef *can) {
 }
 //发送报文
 bool Can_SendMsg(uint16_t cmd_num, const uint8_t *data, uint8_t len){
-    printf("stm32-应答主控板");
+    uint8_t dummy = 0;
+    if (!data) data = &dummy;
     CAN_TxHeaderTypeDef tx = {0};
     tx.StdId = cmd_num; 
     tx.IDE = CAN_ID_STD; 
@@ -130,7 +127,7 @@ bool Can_SendMsg(uint16_t cmd_num, const uint8_t *data, uint8_t len){
 }
 //根据指令编号找到对应方法执行
 void handleCommand(uint16_t cmd_num, const uint8_t *data, uint8_t len){
-    printf("处理指令");
+    // printf("处理指令:%lu",(unsigned long)cmd_num);
     uint8_t ack[2] = { (uint8_t)cmd_num, 0 };
     //先应答，再执行任务。
     Can_SendMsg(CAN_ACK, ack,2);
@@ -140,11 +137,22 @@ void handleCommand(uint16_t cmd_num, const uint8_t *data, uint8_t len){
         uint16_t spend_time = (uint16_t)data[6] | ((uint16_t)data[7] << 8);
         int target[6];
         for (int i = 0; i < 6; i++) target[i] = data[i];
+        // printf("执行moveto：%d,%d,%d,%d,%d,%d",target[0],target[1],target[2]
+        //     ,target[3],target[4],target[5]);
         servo_moveTo(target, spend_time);
         uint8_t done[6];
         for (int i = 0; i < 6; i++) done[i] = (uint8_t)current_angles[i];
         Can_SendMsg(CAN_MOVETO_DONE, done, 6);
     }
+    if (cmd_num == CAN_POSE_MOVE && len == 2){
+        int idx = data[0];
+        int angle = data[1];
+        printf("执行servo_write：%d,%d",idx,angle);
+        servo_write(idx, angle);
+        uint8_t done[2] = { (uint8_t)idx, (uint8_t)current_angles[idx] };
+        Can_SendMsg(CAN_POSE_MOVE_DONE, done, 2);
+    }
+    
     //请求角度
     else if (cmd_num == CAN_READ_ANGLES){
         uint8_t actual_angles[6];
@@ -157,8 +165,9 @@ void handleCommand(uint16_t cmd_num, const uint8_t *data, uint8_t len){
         //回应心跳
         Can_SendMsg(CAN_PONG, 0, 0);
     }
+    last_rx_tick = xTaskGetTickCount();
 }
-void USB_LP_CAN1_RX0_IRQHandler(void) { 
-    Can_ReceiveMsg(&can); 
+void CAN1_RX0_IRQHandler(void) { 
+    Can_ReceiveMsg(&can);
 }
 

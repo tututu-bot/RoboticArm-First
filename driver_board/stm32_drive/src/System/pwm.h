@@ -1,6 +1,6 @@
 #pragma once
 
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <stdint.h>
 
 typedef struct {
@@ -11,7 +11,7 @@ typedef struct {
     char               pinType;//GPIOA、GPIOB
 } sim_servo;
 
-extern const sim_servo servo_table[5];
+extern const sim_servo servo_table[6];
 
 void start_pwm_clk();
 void pwm_timer_init();

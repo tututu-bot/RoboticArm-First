@@ -166,8 +166,6 @@ not necessary for to use this port.  They are defined so the common demo files
 	#define portFORCE_INLINE inline __attribute__(( always_inline))
 #endif
 
-/*-----------------------------------------------------------*/
-
 portFORCE_INLINE static BaseType_t xPortIsInsideInterrupt( void )
 {
 uint32_t ulCurrentInterrupt;
@@ -196,7 +194,7 @@ uint32_t ulNewBASEPRI;
 
 	__asm volatile
 	(
-		"	mov %0, %1												\n" \
+		"	mov %0, %1												\n"	\
 		"	msr basepri, %0											\n" \
 		"	isb														\n" \
 		"	dsb														\n" \
@@ -213,7 +211,7 @@ uint32_t ulOriginalBASEPRI, ulNewBASEPRI;
 	__asm volatile
 	(
 		"	mrs %0, basepri											\n" \
-		"	mov %1, %2												\n" \
+		"	mov %1, %2												\n"	\
 		"	msr basepri, %1											\n" \
 		"	isb														\n" \
 		"	dsb														\n" \

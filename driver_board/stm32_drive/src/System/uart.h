@@ -1,5 +1,5 @@
 #pragma once
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <stdio.h> 
 
 #define BUS_BAUD        115200
@@ -10,4 +10,5 @@ extern UART_HandleTypeDef huart1;
 void dbg_uart_init(void);   
 void start_uart_clk();
 void uart_init();
-void uart_send(const char *fmt);
+int uart_send(const char *fmt);
+void uart_loopback_test(void);

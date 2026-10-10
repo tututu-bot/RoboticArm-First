@@ -38,10 +38,6 @@ extern int current_angle[SERVO_COUNT];       // 程序记账：每个舵机"现�
 // 初始化一个舵机：先建 PID，再按 gpio 分流（13 = 总线舵机，其余 = 模拟舵机）
 void servo_init(int gpio, int channel, int servo_idx);
 
-// 让某个舵机转到 angle 度：同样按 gpio 分流到 bus_servo_write / sim_servo_write
-// ★ 三个参数：gpio 用来分流，channel 给 LEDC，angle 是目标角度
-void servo_write(int gpio, int channel, int angle);
-
 int  clamp_angle(int i, int angle);                  // 角度限位（防倾覆第一道闸）
 void gripper_move(int angle, int duration_ms);       // 只动夹爪
 void pick_and_place(void);                           // 一键抓取流程
@@ -49,3 +45,4 @@ void pick_and_place(void);                           // 一键抓取流程
 
 int read_current_state(int out[6]);
 int move_to(const int target[], int spend_time);
+int servo_write(int idx, int angle);

@@ -4,6 +4,10 @@
 #define CAN_MOVETO          0x101
 //执行完毕回应
 #define CAN_MOVETO_DONE     0x187
+//滑动条控制
+#define CAN_POSE_MOVE       0x102
+//滑动条控制回应
+#define CAN_POSE_MOVE_DONE  0x188
 //请求角度
 #define CAN_READ_ANGLES     0x103
 //回应角度

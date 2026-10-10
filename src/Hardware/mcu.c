@@ -31,9 +31,23 @@ void mcu_init(void){
 //参数：消息ID、消息数据、数据长度
 static void send_msg(uint16_t cmd_num, const uint8_t *data, uint8_t len){
     twai_message_t msg = {.identifier = cmd_num, .data_length_code = len};
-    for (int i = 0; i < len; i++)
-        msg.data[i] = data[i];
-    twai_transmit(&msg, pdMS_TO_TICKS(50));// 50ms 超时
+    for (int i = 0; i < len; i++) msg.data[i] = data[i];
+
+    esp_err_t e = twai_transmit(&msg, pdMS_TO_TICKS(50));
+    if (e != ESP_OK){
+        twai_status_info_t st;
+        twai_get_status_info(&st);
+        printf("发送失败: 0x%x | state=%d tx_err=%lu rx_err=%lu\n",
+               e, st.state, (unsigned long)st.tx_error_counter, (unsigned long)st.rx_error_counter);
+        if (st.state == TWAI_STATE_BUS_OFF){
+            twai_initiate_recovery();
+            for (int i = 0; i < 20 && st.state != TWAI_STATE_STOPPED; i++){
+                vTaskDelay(pdMS_TO_TICKS(50));
+                twai_get_status_info(&st);
+            }
+            twai_start();
+        }
+    }
 }
 //can通信事务 = 发送 + 应答(内部调用)
 //参数：指令编号、报文数据、发送长度、应答指令编号、应答数据、应答长度
@@ -44,11 +58,8 @@ static int mcu_transact(uint16_t cmd_num, const uint8_t *data, uint8_t len,uint1
         send_msg(cmd_num, data, len);
         for (int wait = 0; wait < 5; wait++){
             twai_message_t m;
-            printf("bbb");
             //2.处理应答信息
             if (twai_receive(&m, pdMS_TO_TICKS(10)) == ESP_OK){
-                printf("aaaaaa");
-                printf("%lu\n", (unsigned long)m.identifier);
                 //收到应答，无应答ID
                 if (!r_cmd_num && m.identifier == CAN_ACK && m.data[0] == (uint8_t)cmd_num){
                     ok = 1;
@@ -58,37 +69,59 @@ static int mcu_transact(uint16_t cmd_num, const uint8_t *data, uint8_t len,uint1
                 if (r_cmd_num && m.identifier == r_cmd_num){
                     if (r_len)
                         *r_len = m.data_length_code;
-                    for (int i = 0; i < m.data_length_code && i < 8; i++)
-                        r_data[i] = m.data[i];
+                    if (r_data)
+                        for (int i = 0; i < m.data_length_code && i < 8; i++)
+                            r_data[i] = m.data[i];
                     ok = 1;
                     break;
                 }
             }
         }
     }
-    //⽆应答
-    mcu_link_ok = 0;
-    return 0;
+    //更新链路状态：应答到了就是通，没到就是断
+    mcu_link_ok = ok;
+    return ok;
 }
 //发送转动舵机指令给驱动层
 int mcu_moveto(const int angle[6], int spend_time){
     uint8_t msg[8];
-    for (int i = 0; i < 6; i++)
-        msg[i] = (uint8_t)angle[i];
-    //msg[6]和msg[7]将时间duration_ms拆分，因为int装不进msg。
-    //传到驱动器后在重新计算得到duration_ms这个时间
+    for (int i = 0; i < 6; i++) msg[i] = (uint8_t)angle[i];
     msg[6] = spend_time & 0xFF;
     msg[7] = (spend_time >> 8) & 0xFF;
-    return mcu_transact(CAN_MOVETO, msg, 8, 0, NULL, NULL);
+
+    send_msg(CAN_MOVETO, msg, 8);
+
+    int tries = (spend_time + 1000) / 10;
+    for (int i = 0; i < tries; i++){
+        twai_message_t m;
+        if (twai_receive(&m, pdMS_TO_TICKS(10)) == ESP_OK && m.identifier == CAN_MOVETO_DONE){
+            mcu_link_ok = 1;
+            return 1;
+        }
+    }
+    mcu_link_ok = 0;
+    return 0;
+}
+//发一次心跳给驱动板，收不到 CAN_PONG 就是链路没通
+int mcu_ping(void){
+    uint8_t msg[8], len = 0;
+    return mcu_transact(CAN_PING, NULL, 0, CAN_PONG, msg, &len);
 }
 //获取舵机角度
 int mcu_get_angles(int actual_angle[6]){
     uint8_t msg[8], len = 0;
     if (mcu_transact(CAN_READ_ANGLES, NULL, 0, CAN_RESPONSE_ANGLES, msg, &len) && len >= 6){
-        printf("11111111111111");
         for (int i = 0; i < 6; i++)
             actual_angle[i] = msg[i];
         return 1;
     }
     return 0;
+}
+//指定某个舵机转动
+int mcu_servo_write(int idx, int angle){
+    uint8_t msg[8];
+    uint8_t resp[2],len = 0;
+    msg[0] = (uint8_t)idx;
+    msg[1] = (uint8_t)angle;
+    return mcu_transact(CAN_POSE_MOVE, msg, 2, CAN_POSE_MOVE_DONE, resp, &len);
 }

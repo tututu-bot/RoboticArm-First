@@ -1,4 +1,4 @@
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "System/uart.h"
 
 #define BUS_UART        USART2
@@ -23,11 +23,29 @@ void uart_init(){
     uart.Init.OverSampling = UART_OVERSAMPLING_16;
     HAL_UART_Init(&uart);
 }
-void uart_send(const char *fmt){
+int uart_send(const char *fmt){
     char cmd[UART_CMD_MAX];
     int n = snprintf(cmd, sizeof(cmd), fmt);
-    if (n <= 0) return;//消息长度不正常
-    HAL_UART_Transmit(&uart, (uint8_t *)cmd, (uint16_t)n, UART_TX_TIMEOUT);
+    if (n <= 0) return -1;
+    HAL_StatusTypeDef st = HAL_UART_Transmit(&uart, (uint8_t *)cmd, (uint16_t)n, UART_TX_TIMEOUT);
+    printf("U2> %s | st=%d\n", cmd, (int)st);
+    return (st == HAL_OK) ? n : -1;
+}
+void uart_loopback_test(void){
+    char tx[] = "#000P1500T1000!";
+    char rx[32] = {0};
+    int n = (int)sizeof(tx) - 1;
+    int ok = 0;
+
+    volatile uint32_t tmp = uart.Instance->SR;
+    tmp = uart.Instance->DR;
+    (void)tmp;
+
+    for (int i = 0; i < n; i++) {
+        HAL_UART_Transmit(&uart, (uint8_t *)&tx[i], 1, UART_TX_TIMEOUT);
+        if (HAL_UART_Receive(&uart, (uint8_t *)&rx[i], 1, 200) == HAL_OK) ok++;
+    }
+    printf("loopback_send: [%s]\nloopback_recv: [%s]  (%d/%d)\n", tx, rx, ok, n);
 }
 // ============ 调试串口 USART1（PA9/PA10），printf 的输出口 ============
 UART_HandleTypeDef huart1;                  // ★ 把 main.c 那个 extern 真正定义出来
@@ -38,14 +56,12 @@ void dbg_uart_init(void){
     __HAL_RCC_USART1_CLK_ENABLE();          // ★ USART1 挂在 APB2（USART2 才在 APB1）
 
     GPIO_InitTypeDef g = {0};
-    g.Pin   = GPIO_PIN_9;                   // TX
-    g.Mode  = GPIO_MODE_AF_PP;
-    g.Speed = GPIO_SPEED_FREQ_HIGH;
+    g.Pin       = GPIO_PIN_9;
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Speed     = GPIO_SPEED_FREQ_HIGH;
+    g.Alternate = GPIO_AF7_USART1;
     HAL_GPIO_Init(GPIOA, &g);
-
-    g.Pin   = GPIO_PIN_10;                  // RX
-    g.Mode  = GPIO_MODE_INPUT;
-    g.Pull  = GPIO_PULLUP;
+    g.Pin       = GPIO_PIN_10;
     HAL_GPIO_Init(GPIOA, &g);
 
     huart1.Instance          = USART1;

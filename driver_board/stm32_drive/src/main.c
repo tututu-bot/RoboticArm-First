@@ -1,5 +1,5 @@
 #include "stdio.h"
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -16,13 +16,32 @@ void SysTick_Handler(void){
     if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
         xPortSysTickHandler();
 }
+static void init_random_seed(void) {
+        __HAL_RCC_RNG_CLK_ENABLE();
+    RNG_HandleTypeDef hrng = { .Instance = RNG };
+    uint32_t seed = 0;
+    if (HAL_RNG_Init(&hrng) == HAL_OK) {
+        for (int i = 0; i < 4; i++) {
+            uint32_t v = 0;
+            if (HAL_RNG_GenerateRandomNumber(&hrng, &v) == HAL_OK) seed ^= v;
+            HAL_Delay(1);
+        }
+    } else {
+        seed = HAL_GetTick();
+    }
+    srand(seed);
+    // printf("SEED=%lu\n", (unsigned long)seed);
+}
+static void init_task(void *arg) {
+    can_init();     // 建 can_rx_queue/can_resp_queue、开 CAN 中断
+    servo_init();   // 内部 servo_moveTo → vTaskDelay，必须等调度器起来
+    vTaskDelete(NULL);
+}
 
 //获取队列任务strut，执行handlecommand
 static void ctrl_task(void *arg) {
     can_frame_t f;
     static int lost = 0;
-    can_enable_rx();
-    servo_init();
     last_rx_tick = xTaskGetTickCount();
     while (1) {
         if (xQueueReceive(can_rx_queue, &f, pdMS_TO_TICKS(200)) == pdTRUE) {
@@ -50,11 +69,11 @@ int main(void){
     HAL_Init();
     SystemClock_Config();
     dbg_uart_init();
+    init_random_seed();
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("stm32_main\r\n");
-    can_init();
+    xTaskCreate(init_task, "init", 512, NULL, 5, NULL);
     xTaskCreate(ctrl_task, "ctrl", 384, NULL, 3, NULL);
-    xTaskCreate(resp_task, "resp", 384, NULL, 4, NULL);   // ★ 比 ctrl 高一级
+    xTaskCreate(resp_task, "resp", 384, NULL, 4, NULL);
     vTaskStartScheduler();
-    while (1){printf("aaa");};
+    while (1);
 }

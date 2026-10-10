@@ -1,6 +1,7 @@
 #pragma once
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include <stdbool.h>
+#include <stdlib.h>
 
 #define UART_RX_ENABLE  true
 extern const int home_pose[6];
@@ -12,3 +13,4 @@ void servo_init();
 void servo_moveTo(const int target[],int spend_time);
 float read_actual_angle(int idx);
 void servo_motion_abort(void);
+void servo_write(int idx,int angle);

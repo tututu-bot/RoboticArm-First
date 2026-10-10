@@ -1,4 +1,4 @@
-#include "stm32f1xx_hal.h"
+#include "stm32f4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "servo.h"
@@ -10,17 +10,28 @@ static volatile int s_abort = 0;
 const int home_pose[6] = {90,90,90,90,90,90};
 int current_angles[6];
 pid_t srv_pid[6];
-int servo_min_limit[6] = {  0,   0,   0,   0,   0,  35};
-int servo_max_limit[6] = {180, 180, 180, 180, 180, 135};
+int servo_min_limit[6] = {  0,   0,   0,   0,   0,  0};
+int servo_max_limit[6] = {180, 180, 180, 180, 180, 180};
 
 static uint32_t angle_to_pulse(int angle);   // 前置声明：下面 servo_write 要用
 
+//伪造读取到误差值：60%为0，20%为-1，20%为+1
+static int get_random_err(){
+    int r = rand() % 5;
+    int random_err = (r < 3) ? 0 : ((r == 3) ? -1 : 1);
+    return random_err;
+}
+static void update_current_angles(const int *angles){
+    for (int i = 0; i < 6; i++){
+        current_angles[i] = angles[i];
+    }
+}
 //初始化舵机状态
 static void servo_state_init(){
+    //更新当前角度状态
+    update_current_angles(home_pose);
     //舵机初始角度
     servo_moveTo(home_pose,2000);
-    //更新当前角度状态
-    for (int i = 0; i < 6; i++) current_angles[i] = home_pose[i];
 }
 //角度限制
 static int clamp_angle(int i, int angle) {
@@ -29,12 +40,11 @@ static int clamp_angle(int i, int angle) {
     return angle;
 }
 //控制舵机转动
-static void servo_write(int idx,int angle){
-    //角度转脉宽
-    uint32_t pluse = angle_to_pulse(angle);
-    //舵机转动
-    if (idx == 0) {bus_servo_write(J1_ID,pluse);return;}
+void servo_write(int idx,int angle){
+    int out = (idx == 1) ? (180 - angle) : angle;
+    uint32_t pluse = angle_to_pulse(out);
     sim_servo_write(idx,pluse);
+    current_angles[idx] = angle;
 }
 //角度转脉宽
 static uint32_t angle_to_pulse(int angle){
@@ -47,7 +57,8 @@ static uint32_t angle_to_pulse(int angle){
 void servo_init(){
     //初始化舵机配置
     sim_servo_init();
-    bus_servo_init();
+    for (int i = 0; i < 6; i++) pid_init(&srv_pid[i], 0.5f, 0.3f, 0.1f);
+    // bus_servo_init();
     //初始化舵机状态
     servo_state_init();
 }
@@ -81,13 +92,12 @@ void servo_moveTo(const int target[],int spend_time){
         }
         vTaskDelay(pdMS_TO_TICKS(T));
     }
+    for (size_t i = 0; i < 6; i++) current_angles[i] = clamp_angle(i, current_angles[i]+get_random_err());    
+    printf("[%d,%d,%d,%d,%d,%d]\n",current_angles[0],current_angles[1]
+    ,current_angles[2],current_angles[3],current_angles[4],current_angles[5]);
 }
 //读取角度
 float read_actual_angle(int idx){
-    if (idx == 0){//如果是J1（底座）
-        //todo编码器读取角度
-        return (float)current_angles[idx];
-    }
     return (float)current_angles[idx];
 }
 void servo_motion_abort(void){s_abort = 1;}

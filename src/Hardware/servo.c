@@ -51,11 +51,18 @@ static uint32_t angle_to_duty(int angle) {
 
 //舵机初始化
 void servo_init(int gpio, int channel, int servo_idx) {                
-    
+    // bus_servo_init(13, JOINT_1_ID);
+    // bus_servo_write(JOINT_1_ID, 90);
+    // bus_servo_write(JOINT_1_ID, 50);
+    // bus_servo_write(JOINT_1_ID, 130);
 }
 //舵机转动
-void servo_write(int gpio, int channel, int angle) {              
-    
+int servo_write(int idx, int angle) {              
+    int resp = mcu_servo_write(idx, angle);
+    if(resp == 1){
+        current_angle[idx] = angle;
+    }
+    return resp;
 }
 
 //限幅
@@ -65,9 +72,10 @@ int clamp_angle(int i, int angle) {
     return angle;
 }
 //移动到指定角度
-int move_to(const int target[], int spend_time) {     
-    //发送移动指令
-    int resp = mcu_moveto(target,spend_time);
+int move_to(const int target[], int spend_time) {
+    int resp = mcu_moveto(target, spend_time);
+    if (resp == 1)
+        for (int i = 0; i < 6; i++) current_angle[i] = target[i];
     return resp;
 }
 //读取角度

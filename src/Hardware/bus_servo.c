@@ -37,7 +37,12 @@ void bus_servo_init(int gpio,int servo_id){
     }
 
     char cmd[24];
-    int n = snprintf(cmd, sizeof(cmd), "#%03dPMOD%d!", servo_id, BUS_MODE_180_CW);
+    int n = snprintf(cmd, sizeof(cmd), "#255PCLE!");
+    uart_write_bytes(BUS_UART, cmd, n);
+    uart_wait_tx_done(BUS_UART, pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    n = snprintf(cmd, sizeof(cmd), "#%03dPMOD%d!", servo_id, BUS_MODE_180_CW);
     uart_write_bytes(BUS_UART, cmd, n);
     uart_wait_tx_done(BUS_UART, pdMS_TO_TICKS(100));
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -50,12 +55,14 @@ void bus_servo_init(int gpio,int servo_id){
  */
 void bus_servo_write(int servo_id, int angle)
 {
+    printf("bus_servo_write: id=%d, angle=%d\n", servo_id, angle);
     int pulse_us = 500 + (2000 * angle) / 180;
     if (pulse_us < 500)  pulse_us = 500;
     if (pulse_us > 2500) pulse_us = 2500;
 
     char cmd[24];
     int n = snprintf(cmd, sizeof(cmd), "#%03dP%04dT%04d!", servo_id, pulse_us, BUS_MOVE_MS);
+    printf("U1>%s\n", cmd);
     uart_write_bytes(BUS_UART, cmd, n);
 }
 

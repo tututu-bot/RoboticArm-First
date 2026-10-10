@@ -1,8 +1,9 @@
 #pragma once
 #include <stdint.h>
 
-#define J1_ID       1
+#define J1_ID       0
 #define BUS_SERVO_MODE  3
+#define J1_SPEED         15 //单位ms
 
 
 void bus_servo_init();
