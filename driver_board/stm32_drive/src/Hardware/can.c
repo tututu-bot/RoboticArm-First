@@ -135,13 +135,13 @@ void handleCommand(uint16_t cmd_num, const uint8_t *data, uint8_t len){
     if (cmd_num == CAN_MOVETO && len == 8){
         //转动花费时间
         uint16_t spend_time = (uint16_t)data[6] | ((uint16_t)data[7] << 8);
-        int target[6];
+        float target[6];
         for (int i = 0; i < 6; i++) target[i] = data[i];
         // printf("执行moveto：%d,%d,%d,%d,%d,%d",target[0],target[1],target[2]
         //     ,target[3],target[4],target[5]);
         servo_moveTo(target, spend_time);
         uint8_t done[6];
-        for (int i = 0; i < 6; i++) done[i] = (uint8_t)current_angles[i];
+        for (int i = 0; i < 6; i++) done[i] = (uint8_t)(current_angles[i] + 0.5f);
         Can_SendMsg(CAN_MOVETO_DONE, done, 6);
     }
     if (cmd_num == CAN_POSE_MOVE && len == 2){
@@ -149,14 +149,13 @@ void handleCommand(uint16_t cmd_num, const uint8_t *data, uint8_t len){
         int angle = data[1];
         printf("执行servo_write：%d,%d",idx,angle);
         servo_write(idx, angle);
-        uint8_t done[2] = { (uint8_t)idx, (uint8_t)current_angles[idx] };
+        uint8_t done[2] = { (uint8_t)idx, (uint8_t)(current_angles[idx] + 0.5f) };
         Can_SendMsg(CAN_POSE_MOVE_DONE, done, 2);
     }
-    
     //请求角度
     else if (cmd_num == CAN_READ_ANGLES){
         uint8_t actual_angles[6];
-        for (int i = 0; i < 6; i++) actual_angles[i] = (uint8_t)read_actual_angle(i);
+        for (int i = 0; i < 6; i++) actual_angles[i] = (uint8_t)(read_actual_angle(i) + 0.5f);
         //回应角度
         Can_SendMsg(CAN_RESPONSE_ANGLES, actual_angles, 6);
     }

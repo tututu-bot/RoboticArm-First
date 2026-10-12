@@ -4,13 +4,14 @@
 #include <stdlib.h>
 
 #define UART_RX_ENABLE  true
-extern const int home_pose[6];
-extern int current_angles[6];
+extern const float home_pose[6];
+extern float current_angles[6];
 extern int servo_min_limit[6];
 extern int servo_max_limit[6];
 
 void servo_init();
-void servo_moveTo(const int target[],int spend_time);
+void servo_moveTo(const float target[],int spend_time);
 float read_actual_angle(int idx);
+float read_actual_speed(int idx);
 void servo_motion_abort(void);
-void servo_write(int idx,int angle);
+void servo_write(int idx,float angle);

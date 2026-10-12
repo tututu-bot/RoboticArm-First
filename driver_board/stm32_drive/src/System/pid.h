@@ -8,4 +8,4 @@ typedef struct {
 
 void pid_init(pid_t *p, float kp, float ki, float kd);
 void pid_reset(pid_t *p);
-float pid_update(pid_t *p, float targetAngle, float actualAngle);
+float pid_update(pid_t *p, float e);

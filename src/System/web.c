@@ -168,6 +168,33 @@ static esp_err_t pose_handler(httpd_req_t *req){
     return ESP_OK;
 }
 
+// /pose_one?i=1&a=95：只写一个关节（单个滑条拖动时用，避免整组下发把别的关节也重写一遍）
+static esp_err_t pose_one_handler(httpd_req_t *req){
+    if (traj_busy()){
+        httpd_resp_send(req, "busy", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    char buf[96];
+    char s_i[16] = "", s_a[16] = "";
+    int i = -1, a = 0;
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK &&
+        httpd_query_key_value(buf, "i", s_i, sizeof(s_i)) == ESP_OK &&
+        httpd_query_key_value(buf, "a", s_a, sizeof(s_a)) == ESP_OK &&
+        sscanf(s_i, "%d", &i) == 1 && sscanf(s_a, "%d", &a) == 1){
+        if (i >= 0 && i < SERVO_COUNT){
+            current_angle[i] = clamp_angle(i, a);
+            if (servo_write(i, current_angle[i]) == 1){
+                httpd_resp_send(req, "ok", HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            }
+            httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+    }
+    httpd_resp_send(req, "err", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
 //发一次 CAN_PING，驱动板应回 CAN_PONG（测试页的按钮打这个接口）
 static esp_err_t ping_send_handler(httpd_req_t *req){
     if (mcu_ping()){
@@ -311,6 +338,7 @@ void web_start(void){
         {.uri = "/ping_send", .method = HTTP_GET, .handler = ping_send_handler},
         {.uri = "/state",     .method = HTTP_GET, .handler = state_handler},
         {.uri = "/pose",      .method = HTTP_GET, .handler = pose_handler},
+        {.uri = "/pose_one",  .method = HTTP_GET, .handler = pose_one_handler},
         {.uri = "/traj",      .method = HTTP_GET, .handler = traj_handler},
         {.uri = "/traj_add",  .method = HTTP_GET, .handler = traj_add_handler},
         {.uri = "/traj_del",  .method = HTTP_GET, .handler = traj_del_handler},

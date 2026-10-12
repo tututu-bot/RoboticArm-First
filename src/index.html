@@ -224,7 +224,7 @@
     function onSlide(i, v) {
       vals[i] = +v;
       document.getElementById('v' + i).textContent = v;
-      pushPose();
+      pushPose(i);
     }
 
     /* ---------- 回放期间锁住滑条 ---------- */
@@ -235,15 +235,21 @@
       document.querySelectorAll('input[type=range]').forEach(r => { r.disabled = b; });
     }
 
-    /* ---------- 下发姿态（节流 80ms） ---------- */
-    let timer = null, pend = false;
-    function pushPose() {
+    /* ---------- 下发姿态（节流 80ms，只发被拖的那一个关节） ---------- */
+    let timer = null, dirty = 0;       // dirty 的第 i 位 = 第 i 个关节还没发出去
+    function flushPose() {
+      for (let j = 0; j < 6; j++)
+        if (dirty & (1 << j)) api('/pose_one?i=' + j + '&a=' + vals[j]).catch(() => { });
+      dirty = 0;
+    }
+    function pushPose(i) {
       if (locked) return;              // 回放中，板子只会回 busy，干脆别发
-      if (timer) { pend = true; return; }
-      api('/pose?a=' + encodeURIComponent(vals.join(','))).catch(() => { });
+      if (i >= 0) dirty |= (1 << i);
+      if (timer) return;               // 80ms 内已经在等，先攒着
+      flushPose();                     // 首次立即发，保证手感
       timer = setTimeout(() => {
         timer = null;
-        if (pend) { pend = false; pushPose(); }
+        if (dirty) pushPose(-1);
       }, 80);
     }
 

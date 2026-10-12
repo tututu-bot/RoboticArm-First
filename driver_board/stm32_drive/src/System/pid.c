@@ -19,16 +19,17 @@ void pid_reset(pid_t *p)
 
 // 计算修正值u
 // 位置式PID：u = Kp*e(k) + Ki*Σe(j) + Kd*(e(k) - e(k-1))
-float pid_update(pid_t *p, float targetAngle, float actualAngle)
+float pid_update(pid_t *p, float e)
 {
-    // 1.计算当前error值
-    float e = targetAngle - actualAngle;   
+    // 1.计算当前误差值（误差值的含义是目标值与当前实际值之间的差值）
     // 2.积分历史error值
-    p->integral += e;                
+    p->integral += e;
+    if (p->integral > 30.0f) p->integral = 30.0f;
+    if (p->integral < -30.0f) p->integral = -30.0f;
     // 3.计算本次运动修正量：u=比例项+积分项+微分项
     float u = p->kp * e + p->ki * p->integral + p->kd * (e - p->e_k1);
     // 4.记录error_k-1值为本次error值（下一步计算时的k-1误差值为本次error） 
-    p->e_k1 = e;     
-    // 5.返回修正值u                
+    p->e_k1 = e;
+    // 5.返回修正值u
     return u;
 }
